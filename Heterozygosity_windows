@@ -1,0 +1,102 @@
+# file format for Heterozygosity analysis : 
+# Convert VCF to matrix format :  column = indiviual, snp = row
+# homozogous no snp = 0, heterozygous = 1, homozogous for the snp = 2
+# I seperated the headers and positions into other files
+# example = 
+
+data_inter:
+
+1       1       1       0       0       0             
+0       0       0       0       2       0              
+0       0       0       0       0       0               
+
+
+headers_int:
+
+Sample_A_2       Sample_A_4       Sample_A_6       Sample_A_7       Sample_A_8       Sample_A_9   
+
+positions_Inter: 
+
+NC_037638.1 6891
+NC_037638.1 7020
+NC_037638.1 7058
+NC_037638.1 7060
+NC_037638.1 7094
+NC_037638.1 7098
+
+
+library(dplyr)
+library(tidyr)
+
+# Step 1: Read header and data for each population
+headers_pop1 <- unlist(strsplit(readLines("header_1"), "\t"))
+headers_pop2 <- unlist(strsplit(readLines("header_2"), "\t"))
+headers_pop3 <- unlist(strsplit(readLines("header_3"), "\t"))
+
+data_pop1 <- read.delim("pop1_het.txt", header = FALSE)
+data_pop2 <- read.delim("pop2_het.txt", header = FALSE)
+data_pop3 <- read.delim("pop3_het.txt", header = FALSE)
+
+colnames(data_pop1) <- headers_pop1
+colnames(data_pop2) <- headers_pop2
+colnames(data_pop3) <- headers_pop3
+
+# Step 2: Calculate observed and expected heterozygosity per SNP
+calc_het <- function(df, sample_size){
+  df %>%
+    mutate(
+      het_obs = apply(., 1, function(row) sum(row == 1) / sample_size),
+      het_exp = apply(., 1, function(row){
+        n_0 <- sum(row == 0) * 2
+        n_1 <- sum(row == 1) * 2
+        n_2 <- sum(row == 2) * 2
+        total_alleles <- n_0 + n_1 + n_2
+        p_0 <- (n_0 + n_1 / 2) / total_alleles
+        p_2 <- (n_2 + n_1 / 2) / total_alleles
+        1 - (p_0^2 + p_2^2)
+      })
+    )
+}
+
+data_pop1 <- calc_het(data_pop1, sample_size = NUMBER_OF_SAMPLES_POP1)
+data_pop2 <- calc_het(data_pop2, sample_size = NUMBER_OF_SAMPLES_POP2)
+data_pop3 <- calc_het(data_pop3, sample_size = NUMBER_OF_SAMPLES_POP3)
+
+# Step 3: Combine positions and heterozygosity data clearly
+positions_population1 <- read.table("positions_1.txt", header = FALSE, sep = "\t", col.names = c("CHROM", "POS"))
+positions_population2 <- read.table("positions_2.txt", header = FALSE, sep = "\t", col.names = c("CHROM", "POS"))
+positions_population3 <- read.table("positions_3.txt", header = FALSE, sep = "\t", col.names = c("CHROM", "POS"))
+
+data_pop1 <- bind_cols(positions_population1, data_pop1[, c("het_obs", "het_exp")]) %>%
+  rename(het_obs_1 = het_obs, het_exp_1 = het_exp)
+
+data_pop2 <- bind_cols(positions_population2, data_pop2[, c("het_obs", "het_exp")]) %>%
+  rename(het_obs_2 = het_obs, het_exp_2 = het_exp)
+
+data_pop3 <- bind_cols(positions_population3, data_pop3[, c("het_obs", "het_exp")]) %>%
+  rename(het_obs_3 = het_obs, het_exp_3 = het_exp)
+
+# Step 4: Merge clearly by CHROM and POS
+combined_het_final <- full_join(data_pop1, data_pop2, by = c("CHROM", "POS")) %>%
+                      full_join(data_pop3, by = c("CHROM", "POS"))
+
+# Save combined data
+write.table(combined_het_final, "combined_het_final.txt", sep = "\t", row.names = FALSE)
+
+# Step 5: Calculate windowed metrics
+windows <- pi_data[, c("CHROM", "BIN_START", "BIN_END")]
+
+windowed_het_metrics <- windows %>%
+  rowwise() %>%
+  mutate(
+    mean_values = list(
+      combined_het_final %>%
+        filter(CHROM == cur_data()$CHROM, POS >= cur_data()$BIN_START, POS <= cur_data()$BIN_END) %>%
+        summarise(across(c(het_obs_1, het_exp_1, het_obs_2, het_exp_2, het_obs_3, het_exp_3),
+                         ~mean(.x, na.rm = TRUE)))
+    )
+  ) %>%
+  unnest(cols = mean_values)
+
+# Save windowed results
+write.table(windowed_het_metrics, "windowed_het_metrics.txt", sep = "\t", row.names = FALSE)
